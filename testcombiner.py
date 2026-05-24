@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
-from strategies.MACDStrategy import MACDStrategy
+from combiner import Combiner
 
 load_dotenv()
 
@@ -22,8 +22,12 @@ request = StockBarsRequest(
 bars = client.get_stock_bars(request).df
 prices = bars.loc["AAPL"]["close"]
 
-macd = MACDStrategy(fast=12, slow=26, signal=9)
-signal = macd.get_signal(prices)
+combiner = Combiner(mode="majority")
+decision, results = combiner.decide(prices)
 
-print(f"Nombre de jours : {len(prices)}")
-print(f"Signal MACD     : {signal.upper()}")
+print("── Signaux individuels ──────────────")
+for name, signal, _ in results:
+    print(f"  {name:<6} → {signal.upper()}")
+
+print("─────────────────────────────────────")
+print(f"  Décision finale → {decision.upper()}")

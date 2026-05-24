@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
-from strategies.sma import SMAStrategy
+from strategies.SMAStrategy import SMAStrategy
 
 load_dotenv()
 
