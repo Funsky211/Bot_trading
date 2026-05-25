@@ -1,7 +1,8 @@
-from dotenv import load_dotenv
-import os
 import sys
 sys.stdout.reconfigure(encoding='utf-8')
+
+from dotenv import load_dotenv
+import os
 from datetime import datetime, timedelta
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
@@ -10,12 +11,9 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from combiner import Combiner
+import config
 
 load_dotenv()
-
-SYMBOL = "AAPL"
-QTY    = 1
-MODE   = "majority"  # "majority" | "unanimous" | "weighted"
 
 ICON = {"buy": "🟢", "sell": "🔴", "hold": "⚪"}
 
@@ -31,69 +29,69 @@ data = StockHistoricalDataClient(
     os.getenv("ALPACA_SECRET_KEY"),
 )
 
-# ── Récupérer les prix ────────────────────────────────────────────────────────
-request = StockBarsRequest(
-    symbol_or_symbols=SYMBOL,
-    timeframe=TimeFrame.Day,
-    start=datetime.now() - timedelta(days=200),
-)
-
-bars   = data.get_stock_bars(request).df
-prices = bars.loc[SYMBOL]["close"]
-
-# ── Décision ──────────────────────────────────────────────────────────────────
-combiner = Combiner(mode=MODE)
-decision, results = combiner.decide(prices)
-
-# ── Affichage ─────────────────────────────────────────────────────────────────
+# ── Compte ────────────────────────────────────────────────────────────────────
 account = trading.get_account()
 
-print("=" * 45)
+print("=" * 55)
 print(f"  Bot Trading · {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-print(f"  Symbole : {SYMBOL}  |  Cash : ${float(account.cash):,.2f}")
-print("=" * 45)
-print(f"  Dernier cours : ${prices.iloc[-1]:.2f}")
-print()
-print("  Signaux :")
-for name, signal, _ in results:
-    print(f"    {ICON[signal]}  {name:<6} → {signal.upper()}")
-print()
-print(f"  Décision [{MODE}] → {decision.upper()}")
-print("=" * 45)
-
-# ── Position actuelle ─────────────────────────────────────────────────────────
-try:
-    pos = trading.get_open_position(SYMBOL)
-    in_position = int(pos.qty) > 0
-except Exception:
-    in_position = False
-
-print(f"  Position ouverte : {'oui' if in_position else 'non'}")
+print(f"  Cash disponible : ${float(account.cash):,.2f}")
+print(f"  Mode            : {config.COMBINE_MODE.upper()}")
+print(f"  Symboles        : {len(config.SYMBOLS)} actions")
+print("=" * 55)
 print()
 
-# ── Exécution de l'ordre ──────────────────────────────────────────────────────
-if decision == "buy" and not in_position:
-    order = MarketOrderRequest(
-        symbol=SYMBOL,
-        qty=QTY,
-        side=OrderSide.BUY,
-        time_in_force=TimeInForce.DAY,
-    )
-    trading.submit_order(order)
-    print(f"  ✅ Ordre BUY {QTY}x {SYMBOL} soumis")
+# ── Analyser chaque action ────────────────────────────────────────────────────
+combiner = Combiner(mode=config.COMBINE_MODE)
 
-elif decision == "sell" and in_position:
-    order = MarketOrderRequest(
-        symbol=SYMBOL,
-        qty=QTY,
-        side=OrderSide.SELL,
-        time_in_force=TimeInForce.DAY,
-    )
-    trading.submit_order(order)
-    print(f"  ✅ Ordre SELL {QTY}x {SYMBOL} soumis")
+for symbol in config.SYMBOLS:
+    try:
+        # Récupérer les prix
+        request = StockBarsRequest(
+            symbol_or_symbols=symbol,
+            timeframe=TimeFrame.Day,
+            start=datetime.now() - timedelta(days=200),
+        )
+        bars   = data.get_stock_bars(request).df
+        prices = bars.loc[symbol]["close"]
 
-else:
-    print("  ⚪ Rien à faire, on attend le prochain signal.")
+        # Décision
+        decision, results = combiner.decide(prices)
+
+        # Affichage
+        signals = " · ".join(f"{ICON[s]} {n}" for n, s, _ in results)
+        print(f"  {symbol:<6}  {signals}  →  {ICON[decision]} {decision.upper()}")
+
+        # Position actuelle
+        try:
+            pos = trading.get_open_position(symbol)
+            in_position = int(pos.qty) > 0
+        except Exception:
+            in_position = False
+
+        # Ordre
+        if decision == "buy" and not in_position:
+            order = MarketOrderRequest(
+                symbol=symbol,
+                qty=config.QTY,
+                side=OrderSide.BUY,
+                time_in_force=TimeInForce.DAY,
+            )
+            trading.submit_order(order)
+            print(f"         ✅ Ordre BUY {config.QTY}x {symbol} soumis")
+
+        elif decision == "sell" and in_position:
+            order = MarketOrderRequest(
+                symbol=symbol,
+                qty=config.QTY,
+                side=OrderSide.SELL,
+                time_in_force=TimeInForce.DAY,
+            )
+            trading.submit_order(order)
+            print(f"         ✅ Ordre SELL {config.QTY}x {symbol} soumis")
+
+    except Exception as e:
+        print(f"  {symbol:<6}  ⚠️  Erreur : {e}")
 
 print()
+print("=" * 55)
 print("Done.")
