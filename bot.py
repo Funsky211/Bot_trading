@@ -161,7 +161,7 @@ for symbol in config.SYMBOLS:
                 print(f"         ⚠️  Cash insuffisant pour acheter {symbol} (besoin ${alloc:,.2f}, dispo ${cash:,.2f})")
 
         elif decision == "sell" and in_position:
-            qty_left = int(float(pos.qty)) if pos else config.QTY
+            qty_left = int(float(pos.qty))
             order = MarketOrderRequest(
                 symbol=symbol,
                 qty=qty_left,

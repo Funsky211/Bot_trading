@@ -5,3 +5,9 @@ __pycache__/
 venv/
 logs/*.log
 .DS_Store
+
+# Artefacts générés
+backtest_results.json
+backtest_results.html
+result.txt
+tp_state.json
