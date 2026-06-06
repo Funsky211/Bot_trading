@@ -1,3 +1,28 @@
+"""
+⚠️  CE FICHIER EST CASSÉ DEPUIS LA REFONTE MENSUELLE MULTI-STRATÉGIES.
+
+Le code ci-dessous utilise l'ANCIENNE interface :
+  - engine.decide(prices: pd.Series, in_position: bool) → (decision_str, results)
+  - Engine.describe_decision(...)               (méthode supprimée)
+  - config.SYMBOLS / BUY_PCT / TRAILING_STOP_PCT / MARKET_FILTER / MARKET_SMA
+    (paradigme per-ticker LONG/NONE → buy/hold/sell)
+
+La nouvelle architecture (vecteurs de poids cross-sectionnels, rebalancement
+mensuel, filtre de régime SPY > MM10 mois) n'est pas encore portée en live.
+
+À FAIRE (chantier séparé) :
+  1. Adapter à la signature `engine.decide(prices_df, strategy_weights=None)`
+     → renvoie pd.Series(weights, somme=1 ou 0).
+  2. Remplacer la boucle per-ticker par un rebalancement vers poids cibles
+     (sells d'abord, buys ensuite, frais Alpaca).
+  3. Brancher RegimeFilter (SPY > MM10) avant decide.
+  4. Persister état mensuel (date dernier rebalancement, dernière cible)
+     plutôt que peak_state.json (qui était trailing stop, supprimé).
+  5. Planifier exécution mensuelle (au 1er jour de bourse du mois, à l'open).
+
+Pour relancer la version mensuelle = pour l'instant utiliser backtest/backtest.py
+en mode paper-trading manuel ou attendre le refacteur.
+"""
 import sys
 sys.stdout.reconfigure(encoding='utf-8')
 
@@ -18,17 +43,17 @@ load_dotenv()
 
 ICON         = {"buy": "🟢", "sell": "🔴", "hold": "⚪"}
 SIGNAL_ICON  = {"LONG": "🟢", "SHORT": "🔴", "NONE": "⚪"}
-TP_STATE_FILE = "tp_state.json"
+PEAK_STATE_FILE = "peak_state.json"   # plus haut prix atteint par position (trailing stop)
 
-def _load_tp_state():
+def _load_peak_state():
     try:
-        with open(TP_STATE_FILE) as f:
+        with open(PEAK_STATE_FILE) as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
-def _save_tp_state(state):
-    with open(TP_STATE_FILE, "w") as f:
+def _save_peak_state(state):
+    with open(PEAK_STATE_FILE, "w") as f:
         json.dump(state, f)
 
 # ── Clients Alpaca ────────────────────────────────────────────────────────────
@@ -51,12 +76,30 @@ print(f"  Bot Trading · {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 print(f"  Cash disponible : ${float(account.cash):,.2f}")
 print(f"  Stratégies      : Trend Following + Mean Reversion")
 print(f"  Symboles        : {len(config.SYMBOLS)} actions")
+
+# ── Filtre de marché : SPY vs sa SMA ──────────────────────────────────────────
+market_bull = True
+if config.MARKET_FILTER:
+    try:
+        spy_req   = StockBarsRequest(
+            symbol_or_symbols="SPY",
+            timeframe=TimeFrame.Day,
+            start=datetime.now() - timedelta(days=config.MARKET_SMA * 2),
+        )
+        spy_close = data.get_stock_bars(spy_req).df.loc["SPY"]["close"]
+        spy_sma   = float(spy_close.rolling(config.MARKET_SMA).mean().iloc[-1])
+        spy_last  = float(spy_close.iloc[-1])
+        market_bull = spy_last > spy_sma
+        etat = "HAUSSIER → achats ON" if market_bull else "BAISSIER → achats OFF"
+        print(f"  Marché SPY      : ${spy_last:.2f} vs SMA{config.MARKET_SMA} ${spy_sma:.2f}  ({etat})")
+    except Exception as e:
+        print(f"  ⚠️  Filtre marché indisponible ({e}) — achats autorisés")
 print("=" * 55)
 print()
 
 # ── Analyser chaque action ────────────────────────────────────────────────────
-engine   = Engine()
-tp_state = _load_tp_state()
+engine     = Engine()
+peak_state = _load_peak_state()
 
 for symbol in config.SYMBOLS:
     try:
@@ -85,49 +128,24 @@ for symbol in config.SYMBOLS:
         print(f"  {symbol:<6}  {signals}  →  {ICON[decision]} {decision.upper()}")
         print(Engine.describe_decision(symbol, decision, results, in_position))
 
-        # Réinitialiser l'état TP si plus de position ouverte
-        if not in_position and symbol in tp_state:
-            del tp_state[symbol]
-            _save_tp_state(tp_state)
+        # Réinitialiser l'état si plus de position ouverte
+        if not in_position and symbol in peak_state:
+            del peak_state[symbol]
+            _save_peak_state(peak_state)
 
-        # Stop loss / paliers de take profit (prioritaires sur le signal)
+        # Trailing stop (prioritaire sur le signal)
         if in_position and pos is not None:
             current_price = float(prices.iloc[-1])
             entry_price   = float(pos.avg_entry_price)
             current_qty   = int(float(pos.qty))
-            change        = (current_price - entry_price) / entry_price
 
-            if symbol not in tp_state:
-                tp_state[symbol] = {"hit": [False] * len(config.TAKE_PROFIT_LEVELS), "iqty": current_qty}
+            # Plus haut atteint depuis l'achat, persistant entre les runs du bot.
+            peak = max(peak_state.get(symbol, entry_price), current_price)
+            peak_state[symbol] = peak
+            _save_peak_state(peak_state)
 
-            # Paliers TP — fraction appliquée sur la quantité INITIALE (cohérent avec backtest)
-            initial_qty = tp_state[symbol]["iqty"]
-            qty_sold  = 0
-            remaining = current_qty
-            for idx, (tp_pct, tp_frac) in enumerate(config.TAKE_PROFIT_LEVELS):
-                if not tp_state[symbol]["hit"][idx] and change >= tp_pct:
-                    tp_state[symbol]["hit"][idx] = True
-                    is_last  = idx == len(config.TAKE_PROFIT_LEVELS) - 1
-                    qty_sell = remaining if is_last else max(1, round(initial_qty * tp_frac))
-                    qty_sell = min(qty_sell, remaining)
-                    qty_sold  += qty_sell
-                    remaining -= qty_sell
-
-            if qty_sold > 0:
-                order = MarketOrderRequest(
-                    symbol=symbol,
-                    qty=qty_sold,
-                    side=OrderSide.SELL,
-                    time_in_force=TimeInForce.DAY,
-                )
-                trading.submit_order(order)
-                lvl = sum(tp_state[symbol]["hit"])
-                print(f"         🎯 TP{lvl} {symbol} | {change*100:+.1f}% | vente {qty_sold} action(s) | reste {remaining}")
-                _save_tp_state(tp_state)
-                continue
-
-            # Stop loss (sur la totalité de la position restante)
-            if change <= -config.STOP_LOSS_PCT:
+            drawdown = (current_price - peak) / peak
+            if drawdown <= -config.TRAILING_STOP_PCT:
                 order = MarketOrderRequest(
                     symbol=symbol,
                     qty=current_qty,
@@ -135,13 +153,14 @@ for symbol in config.SYMBOLS:
                     time_in_force=TimeInForce.DAY,
                 )
                 trading.submit_order(order)
-                print(f"         🛑 STOP LOSS {symbol} | entrée ${entry_price:.2f} | actuel ${current_price:.2f} ({change*100:+.1f}%)")
-                del tp_state[symbol]
-                _save_tp_state(tp_state)
+                gain = (current_price - entry_price) / entry_price
+                print(f"         🛑 TRAILING STOP {symbol} | {gain*100:+.1f}% depuis achat | pic ${peak:.2f} → ${current_price:.2f} ({drawdown*100:.1f}%)")
+                del peak_state[symbol]
+                _save_peak_state(peak_state)
                 continue
 
         # Ordre sur signal
-        if decision == "buy" and not in_position:
+        if decision == "buy" and not in_position and market_bull:
             fresh_account = trading.get_account()
             equity        = float(fresh_account.equity)
             cash          = float(fresh_account.cash)
@@ -159,6 +178,9 @@ for symbol in config.SYMBOLS:
                 print(f"         ✅ Ordre BUY {qty}x {symbol} soumis ({config.BUY_PCT*100:.0f}% equity = ${alloc:,.2f})")
             else:
                 print(f"         ⚠️  Cash insuffisant pour acheter {symbol} (besoin ${alloc:,.2f}, dispo ${cash:,.2f})")
+
+        elif decision == "buy" and not in_position and not market_bull:
+            print(f"         ⏸  Achat {symbol} bloqué : marché baissier (SPY < SMA{config.MARKET_SMA})")
 
         elif decision == "sell" and in_position:
             qty_left = int(float(pos.qty))

@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "PowerShell($paths = @\\(\"$env:USERPROFILE\\\\miniconda3\",\"$env:USERPROFILE\\\\anaconda3\",\"C:\\\\ProgramData\\\\miniconda3\",\"C:\\\\ProgramData\\\\Anaconda3\",\"$env:LOCALAPPDATA\\\\miniconda3\"\\); foreach \\($p in $paths\\) { $py = Join-Path $p \"envs\\\\Bot_trading\\\\python.exe\"; if \\(Test-Path $py\\) { Write-Output \"FOUND: $py\" } })"
+      "PowerShell($paths = @\\(\"$env:USERPROFILE\\\\miniconda3\",\"$env:USERPROFILE\\\\anaconda3\",\"C:\\\\ProgramData\\\\miniconda3\",\"C:\\\\ProgramData\\\\Anaconda3\",\"$env:LOCALAPPDATA\\\\miniconda3\"\\); foreach \\($p in $paths\\) { $py = Join-Path $p \"envs\\\\Bot_trading\\\\python.exe\"; if \\(Test-Path $py\\) { Write-Output \"FOUND: $py\" } })",
+      "Bash(py -3.10 -m py_compile universe_selector.py build_universe.py backtest.py)",
+      "Bash(py -3.10 universe_selector.py)",
+      "Bash(py -3.10 -c ' *)"
     ]
   }
 }

@@ -10,4 +10,8 @@ logs/*.log
 backtest_results.json
 backtest_results.html
 result.txt
-tp_state.json
+peak_state.json
+
+# Univers dynamique (régénérable via build_universe.py)
+universe_history.db
+sp500_constituents.csv
