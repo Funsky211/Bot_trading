@@ -3,15 +3,20 @@ import pandas as pd
 
 class RegimeFilter:
     """
-    Filtre de régime de marché basé sur SPY (proxy S&P 500).
+    Filtre de régime de marché basé sur SPY (proxy S&P 500), asymétrique.
 
-    Logique : à la fin du dernier mois observé, on compare SPY[t-1] à sa
-    moyenne mobile sur `window_months` derniers prix mensuels INCLUANT
-    SPY[t-1]. Si prix > MM → régime haussier (bullish, True). Sinon → bearish.
+    Logique :
+      - Si on est EN MARCHÉ (positions > 0) : on compare SPY à sa MM
+        `exit_window`. Sortir si SPY < MM_exit (réactif aux crashes).
+      - Si on est EN CASH (positions = 0)   : on compare SPY à sa MM
+        `entry_window`. Rentrer seulement si SPY > MM_entry (prudent).
 
-    Effet attendu côté backtest : si bearish, on liquide tout et on reste
-    cash jusqu'au retour au-dessus de la MM. Décision applicable au mois
-    suivant (exécution à l'open).
+    Si `exit_window == entry_window`, on retombe sur un filtre symétrique
+    classique (sortir/rentrer sur la même MM).
+
+    Crée une "bande morte" entre les transitions cash↔marché qui réduit
+    le whipsaw : sortir vite quand le marché casse, ne rentrer que lorsque
+    la reprise est confirmée par une fenêtre plus longue.
 
     Anti look-ahead : on n'utilise QUE des prix ≤ `iloc[-1]` (close du
     dernier mois achevé). Convention B, cohérente avec TrendFollowingPerAsset.
@@ -20,15 +25,27 @@ class RegimeFilter:
     valeurs = close mensuel SPY).
     """
 
-    def __init__(self, window_months: int = 10):
-        self.window_months = window_months
+    def __init__(self, exit_window: int = 3, entry_window: int = 12):
+        self.exit_window  = exit_window
+        self.entry_window = entry_window
 
-    def is_bullish(self, spy_prices: pd.Series) -> bool:
+    @property
+    def warmup_min_rows(self) -> int:
+        """Historique minimum requis = max des deux fenêtres."""
+        return max(self.exit_window, self.entry_window)
+
+    def is_bullish(self, spy_prices: pd.Series, currently_invested: bool) -> bool:
+        """
+        currently_invested : True si on a au moins une position au moment
+                              de la décision. Détermine quelle MM appliquer.
+        """
+        window_size = self.exit_window if currently_invested else self.entry_window
+
         # Historique insuffisant → conservateur : pas haussier (= on n'investit pas).
-        if len(spy_prices) < self.window_months:
+        if len(spy_prices) < window_size:
             return False
 
-        window = spy_prices.iloc[-self.window_months:]
+        window = spy_prices.iloc[-window_size:]
         mm     = window.mean()
         price  = spy_prices.iloc[-1]
 

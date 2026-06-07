@@ -62,7 +62,10 @@ RESULTS_JSON = os.path.join(SCRIPT_DIR, "backtest_results.json")
 TXN_COST = config.TRANSACTION_COST_BP / 10_000.0   # 5 bp → 0.0005
 STRAT_WEIGHTS = config.STRATEGY_WEIGHTS            # None = equal-weight
 REGIME_ON     = config.REGIME_FILTER
-regime        = RegimeFilter(window_months=config.REGIME_SMA_MONTHS)
+regime        = RegimeFilter(
+    exit_window  = config.REGIME_EXIT_WINDOW,
+    entry_window = config.REGIME_ENTRY_WINDOW,
+)
 
 BACKTEST_START = datetime.now() - timedelta(days=config.BACKTEST_DAYS)
 BACKTEST_END   = datetime.now()
@@ -101,7 +104,8 @@ print(f"  Fenêtre : {BACKTEST_START.date()} → {BACKTEST_END.date()} ({config.
 print(f"  Capital initial : ${config.INITIAL_CASH:,.2f}")
 print(f"  Frais : {config.TRANSACTION_COST_BP} bp / jambe ({2*config.TRANSACTION_COST_BP} bp aller-retour)")
 print(f"  Pondération inter-stratégies : {'equal-weight' if STRAT_WEIGHTS is None else STRAT_WEIGHTS}")
-print(f"  Filtre de régime SPY > MM{config.REGIME_SMA_MONTHS} mois : {'ON' if REGIME_ON else 'OFF'}")
+print(f"  Filtre de régime SPY asymétrique : {'ON' if REGIME_ON else 'OFF'} "
+      f"(sortie MM{config.REGIME_EXIT_WINDOW}, entrée MM{config.REGIME_ENTRY_WINDOW})")
 print("=" * 70)
 print()
 
@@ -223,15 +227,16 @@ for i, exec_period in enumerate(common_months):
 
     # Warm-up : on attend assez d'historique pour que TOUTES les stratégies
     # ET le filtre de régime aient leurs données. Max min_rows requis = 13
-    # (momentum, lowvol). Le filtre SPY a besoin de REGIME_SMA_MONTHS observations.
-    WARMUP_MIN_ROWS = max(13, config.REGIME_SMA_MONTHS if REGIME_ON else 0)
+    # (momentum, lowvol). Le filtre SPY a besoin de regime.warmup_min_rows obs.
+    WARMUP_MIN_ROWS = max(13, regime.warmup_min_rows if REGIME_ON else 0)
     in_warmup = len(signal_prices) < WARMUP_MIN_ROWS
 
-    # Filtre de régime : évalué seulement hors warm-up et si activé.
+    # Filtre de régime asymétrique : la MM utilisée dépend de si on est
+    # déjà investi (MM_exit, rapide) ou en cash (MM_entry, prudent).
     bullish = True
     if not in_warmup and REGIME_ON and spy_monthly_close is not None:
         spy_history = spy_monthly_close.loc[spy_monthly_close.index < exec_period]
-        bullish = regime.is_bullish(spy_history)
+        bullish = regime.is_bullish(spy_history, currently_invested=bool(positions))
         regime_log.append((str(exec_period), bullish))
 
     if in_warmup:
@@ -465,7 +470,8 @@ payload = {
     "transaction_cost_bp":  config.TRANSACTION_COST_BP,
     "strategy_weights":     STRAT_WEIGHTS,
     "regime_filter":        REGIME_ON,
-    "regime_sma_months":    config.REGIME_SMA_MONTHS if REGIME_ON else None,
+    "regime_exit_window":   config.REGIME_EXIT_WINDOW if REGIME_ON else None,
+    "regime_entry_window":  config.REGIME_ENTRY_WINDOW if REGIME_ON else None,
     "bearish_months":       bearish_months,
     "first_allocation":     str(first_alloc_period) if first_alloc_period else None,
     "total_fees":           round(total_fees, 2),

@@ -259,7 +259,7 @@ def _load_prices_incremental(yf_tickers: list, start: date, end: date,
     # ── 1) Extension date (vers le futur) ──────────────────────────────────────
     if cache_end < end - timedelta(days=7):
         delta_start = cache_end + timedelta(days=1)
-        extend_tickers = sorted(have)   # seulement les tickers déjà en cache
+        extend_tickers = sorted(have)
         print(f"  ♻  Extension dates {delta_start} → {end} ({len(extend_tickers)} tickers)")
         delta = _download_dv_batched(extend_tickers, delta_start, end)
         if not delta.empty:
@@ -281,14 +281,9 @@ def _load_prices_incremental(yf_tickers: list, start: date, end: date,
 
     # ── Merge + sauvegarde ─────────────────────────────────────────────────────
     if updated:
-        # concat axis=0 (nouvelles dates) puis dédupe les lignes
-        row_parts  = [p for p in parts if set(p.columns) <= have | set()]
-        # Approche simple : concat tout en axis=0, pivot sur (date, ticker)
-        combined   = pd.concat(parts, axis=0)
-        # Dédupe les lignes (même date dans cached et delta → garder la plus récente)
-        combined   = combined[~combined.index.duplicated(keep="last")]
-        # Ajouter les colonnes des nouveaux tickers (qui n'ont que leur plage propre)
-        combined   = combined.sort_index()
+        combined = pd.concat(parts, axis=0)
+        combined = combined[~combined.index.duplicated(keep="last")]
+        combined = combined.sort_index()
         combined.to_parquet(PRICE_CACHE)
         print(f"  💾 Cache mis à jour : {os.path.basename(PRICE_CACHE)} ({len(combined.columns)} tickers · {combined.index.min().date()} → {combined.index.max().date()})")
         return combined
