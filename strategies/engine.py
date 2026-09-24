@@ -88,32 +88,3 @@ class Engine:
             combined = pd.Series(0.0, index=cols)
 
         return combined
-
-    def decide_with_breakdown(self, prices_df: pd.DataFrame, strategy_weights=None):
-        """
-        Variante diagnostique : renvoie aussi les poids individuels par
-        stratégie (utile pour reporting / debug — quelle stratégie contribue
-        quoi sur quel titre).
-
-        Returns : (combined, breakdown)
-            combined  : pd.Series, vecteur final renormalisé (somme=1 ou 0).
-            breakdown : dict {name: pd.Series} des poids bruts par stratégie
-                        (avant pondération inter-stratégies).
-        """
-        sw        = self._resolve_strategy_weights(strategy_weights)
-        cols      = prices_df.columns
-        combined  = pd.Series(0.0, index=cols)
-        breakdown = {}
-
-        for (name, strat), w in zip(self.strategies, sw):
-            weights = strat.generate_weights(prices_df).reindex(cols, fill_value=0.0)
-            breakdown[name] = weights
-            combined = combined + w * weights
-
-        total = combined.sum()
-        if total > 0:
-            combined = combined / total
-        else:
-            combined = pd.Series(0.0, index=cols)
-
-        return combined, breakdown

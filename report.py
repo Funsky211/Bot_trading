@@ -1,49 +1,45 @@
 import sys, os
 sys.stdout.reconfigure(encoding='utf-8')
 
-from dotenv import load_dotenv
 import json
 import webbrowser
 from datetime import datetime, timedelta
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
 
-# Paths : on lit/écrit à côté du script (sous-dossier backtest/).
-SCRIPT_DIR    = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT  = os.path.dirname(SCRIPT_DIR)
-RESULTS_JSON  = os.path.join(SCRIPT_DIR, "backtest_results.json")
-RESULTS_HTML  = os.path.join(SCRIPT_DIR, "backtest_results.html")
+import data
 
-load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
+RESULTS_DIR   = os.path.join(BASE_DIR, "results")
+RESULTS_JSON  = os.path.join(RESULTS_DIR, "backtest_results.json")
+RESULTS_HTML  = os.path.join(RESULTS_DIR, "backtest_results.html")
 
 # ── Lire les résultats du backtest ────────────────────────────────────────────
 try:
     with open(RESULTS_JSON, encoding="utf-8") as f:
-        data = json.load(f)
+        payload = json.load(f)
 except FileNotFoundError:
     print(f"❌  {RESULTS_JSON} introuvable — lance d'abord backtest.py")
     sys.exit(1)
 
-results        = data["results"]
-total_return   = data["total_return"]
-initial_cash   = data["initial_cash"]
-final_eq       = data.get("final_equity", initial_cash)
-gen_iso        = data.get("generated", "")
+results        = payload["results"]
+total_return   = payload["total_return"]
+initial_cash   = payload["initial_cash"]
+final_eq       = payload.get("final_equity", initial_cash)
+gen_iso        = payload.get("generated", "")
 gen_date       = gen_iso[:10] if gen_iso else ""
 
-# Champs spécifiques nouvelle version (avec fallback pour ancien JSON)
-first_alloc    = data.get("first_allocation")              # ex: "2019-07"
-strategies_lbl = data.get("strategies", "Stratégies")
-txn_bp         = data.get("transaction_cost_bp", 0)
-strat_weights  = data.get("strategy_weights")              # None ou dict/list
-total_fees     = data.get("total_fees", 0)
-regime_on      = data.get("regime_filter", False)
-regime_sma     = data.get("regime_sma_months")
-bearish_months = data.get("bearish_months", 0)
+first_alloc    = payload.get("first_allocation")           # ex: "2019-07"
+strategies_lbl = payload.get("strategies", "Stratégies")
+txn_bp         = payload.get("transaction_cost_bp", 0)
+strat_weights  = payload.get("strategy_weights")           # None ou dict/list
+total_fees     = payload.get("total_fees", 0)
+regime_on      = payload.get("regime_filter", False)
+regime_exit    = payload.get("regime_exit_window")
+regime_entry   = payload.get("regime_entry_window")
+regime_checks  = payload.get("regime_checks", 0)
+bearish_months = payload.get("bearish_months", 0)
 
-portfolio_curve = data.get("portfolio_daily", [])          # list[ [date_str, equity] ]
-backtest_days   = data.get("backtest_days", 0)
+portfolio_curve = payload.get("portfolio_daily", [])       # list[ [date_str, equity] ]
+backtest_days   = payload.get("backtest_days", 0)
 
 # ── Date de début / fin pour le SPY (comparaison équitable) ───────────────────
 # On veut comparer SPY à la même fenêtre que l'exécution réelle du bot :
@@ -63,25 +59,13 @@ elif portfolio_curve:
 else:
     spy_start = datetime.now() - timedelta(days=backtest_days)
 
-# ── Fetch SPY pour comparaison ────────────────────────────────────────────────
-client = StockHistoricalDataClient(
-    os.getenv("ALPACA_API_KEY"),
-    os.getenv("ALPACA_SECRET_KEY"),
-)
-
+# ── Fetch SPY pour comparaison (via le cache partagé) ─────────────────────────
 spy_return     = None
-spy_chart_data = {}   # date -> normalized value (base 100)
+spy_chart_data = {}   # date -> valeur normalisée (base 100)
 
 try:
-    spy_req    = StockBarsRequest(
-        symbol_or_symbols="SPY",
-        timeframe=TimeFrame.Day,
-        start=spy_start,
-    )
-    spy_prices = client.get_stock_bars(spy_req).df.loc["SPY"]["close"]
-    # tz strip (Alpaca renvoie UTC) pour éviter warnings ultérieurs
-    if spy_prices.index.tz is not None:
-        spy_prices.index = spy_prices.index.tz_localize(None)
+    spy_close, _ = data.load_prices(["SPY"], spy_start, datetime.now(), quiet=True)
+    spy_prices   = spy_close["SPY"].dropna()
     spy_return = (spy_prices.iloc[-1] - spy_prices.iloc[0]) / spy_prices.iloc[0] * 100
     spy_first  = spy_prices.iloc[0]
     for d, v in spy_prices.items():
@@ -154,10 +138,11 @@ def _generate_html():
     fees_line = (f"Frais cumulés ${total_fees:,.0f} &nbsp;·&nbsp; "
                  if total_fees else "")
     if regime_on:
-        bull_pct = (n_months - bearish_months) / n_months * 100 if n_months else 0
-        regime_line = (f"Filtre régime SPY > MM{regime_sma} mois : "
-                       f"<strong>ON</strong> "
-                       f"({bearish_months}/{n_months} mois bearish, "
+        n_checks = regime_checks or n_months
+        bull_pct = (n_checks - bearish_months) / n_checks * 100 if n_checks else 0
+        regime_line = (f"Filtre régime SPY <strong>ON</strong> "
+                       f"(sortie MM{regime_exit} / entrée MM{regime_entry} mois — "
+                       f"{bearish_months}/{n_checks} mois bearish, "
                        f"{bull_pct:.0f}% bullish) &nbsp;·&nbsp; ")
     else:
         regime_line = "Filtre régime : <strong>OFF</strong> &nbsp;·&nbsp; "
@@ -335,6 +320,7 @@ function sort(col) {{
 # ── Écriture et ouverture ─────────────────────────────────────────────────────
 html = _generate_html()
 
+os.makedirs(RESULTS_DIR, exist_ok=True)
 with open(RESULTS_HTML, "w", encoding="utf-8") as f:
     f.write(html)
 

@@ -6,12 +6,14 @@ venv/
 logs/*.log
 .DS_Store
 
-# Artefacts générés
-backtest_results.json
-backtest_results.html
-result.txt
-peak_state.json
+# Artefacts générés (backtest_results.json / .html)
+results/
 
-# Univers dynamique (régénérable via build_universe.py)
+# État du bot live
+live_state.json
+
+# Caches régénérables
+cache/
+price_cache.parquet
 universe_history.db
 sp500_constituents.csv
